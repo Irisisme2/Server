@@ -142,6 +142,6 @@ app.post("/analyze", async (req, res) => {
   res.json({ ok: true, signal });
 });
 
-app.listen(PORT, () => {
-  console.log(`🚀 Analyzer ready at http://localhost:${PORT}`);
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`🚀 Analyzer ready at http://0.0.0.0:${PORT}`);
 });
