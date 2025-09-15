@@ -28,7 +28,7 @@ function safeUnlink(path) {
 function captureFrame(outPath, retries = 3) {
   for (let i = 0; i < retries; i++) {
     try {
-            const urls = execSync(`/usr/local/bin/yt-dlp -g ${YOUTUBE_URL}`, { encoding: "utf8" })
+      const urls = execSync(`yt-dlp -g ${YOUTUBE_URL}`, { encoding: "utf8" })
         .trim()
         .split("\n");
       if (!urls.length) throw new Error("yt-dlp nie zwrócił żadnego URL");
@@ -82,18 +82,25 @@ async function analyzeImage(path) {
     console.log("🔎 OCR detected text:", rawText);
 
     // Wyłuskujemy sygnały w kolejności pojawienia się
-    const signals = [];
-    const words = rawText.split(/\s+/);
+  // Wyłuskujemy sygnały w kolejności pojawienia się
+const signals = [];
+const words = rawText.split(/\s+/);
 
-    for (let i = 0; i < words.length; i++) {
-      const w = words[i];
-      if (w.includes("buy")) signals.push("Buy Sygnał");
-      else if (w.includes("sell") || w.includes("short")) signals.push("Sell Sygnał");
-      else if (w.includes("take") && words[i+1] && words[i+1].includes("profit")) {
-        signals.push("Take Profit Sygnał");
-        i++; // pomijamy słowo "profit" w następnej iteracji
-      }
-    }
+for (let i = 0; i < words.length; i++) {
+  const w = words[i];
+  const next = words[i + 1] || "";
+
+  if (w.includes("buy")) {
+    signals.push("Buy Sygnał");
+  } else if (w.includes("sell") || w.includes("short")) {
+    signals.push("Sell Sygnał");
+  } else if (/(tak[el]?|taek)/.test(w) && /(pro[fv]it|prefit)/.test(next)) {
+    // Obsługa literówek "takle", "taek", "prefit"
+    signals.push("Take Profit Sygnał");
+    i++; // pomijamy "profit"/"prefit"
+  }
+}
+
 
     // Bierzemy ostatni sygnał w kolejności
     const last = signals.length > 0 ? signals[signals.length - 1] : null;
@@ -142,6 +149,6 @@ app.post("/analyze", async (req, res) => {
   res.json({ ok: true, signal });
 });
 
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`🚀 Analyzer ready at http://0.0.0.0:${PORT}`);
+app.listen(PORT, () => {
+  console.log(`🚀 Analyzer ready at http://localhost:${PORT}`);
 });
