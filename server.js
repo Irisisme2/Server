@@ -28,7 +28,7 @@ function safeUnlink(path) {
 function captureFrame(outPath, retries = 3) {
   for (let i = 0; i < retries; i++) {
     try {
-      const urls = execSync(`yt-dlp -g ${YOUTUBE_URL}`, { encoding: "utf8" })
+            const urls = execSync(`/usr/local/bin/yt-dlp -g ${YOUTUBE_URL}`, { encoding: "utf8" })
         .trim()
         .split("\n");
       if (!urls.length) throw new Error("yt-dlp nie zwrócił żadnego URL");
