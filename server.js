@@ -96,7 +96,12 @@ async function runAnalysis() {
   const tmpPath = "frame.jpg";
   try {
     console.log("⏳ Pobieram nową klatkę z YouTube...");
-    captureFrame(tmpPath);
+
+    // Pobranie HLS URL
+    const hlsUrl = await getHLSUrl();
+
+    // Teraz przekazujemy URL do captureFrame
+    captureFrame(tmpPath, hlsUrl);
 
     const signal = await analyzeImage(tmpPath);
 
@@ -107,7 +112,6 @@ async function runAnalysis() {
 
     console.log("📡 Ostatni sygnał na wykresie:", signal.type);
 
-    // Wysyłamy tylko jeśli ostatni sygnał jest nowy w stosunku do poprzednio wysłanego
     if (signal.type === lastSentSignal) {
       console.log("⚠️ Ostatni sygnał nie zmienił się → pomijamy");
       return null;
@@ -123,6 +127,7 @@ async function runAnalysis() {
     safeUnlink(tmpPath);
   }
 }
+
 
 // Endpoint ręczny – wywoływany np. z n8n
 app.post("/analyze", async (req, res) => {
