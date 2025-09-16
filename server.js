@@ -53,22 +53,31 @@ async function analyzeImage(path) {
 
     const detections = res.data.responses?.[0]?.textAnnotations || [];
     if (!detections.length) return null;
+
     const rawText = detections.map(d => d.description).join(" ").toLowerCase();
+    console.log("🔎 OCR detected text:", rawText);
 
     const signals = [];
     const words = rawText.split(/\s+/);
+
     for (let i = 0; i < words.length; i++) {
-      const w = words[i], next = words[i+1]||"";
+      const w = words[i];
+      const next = words[i + 1] || "";
+
       if (w.includes("buy")) signals.push("Buy Sygnał");
       else if (w.includes("sell") || w.includes("short")) signals.push("Sell Sygnał");
-      else if (/(tak[el]?|taek)/.test(w) && /(pro[fv]it|prefit)/.test(next)) { signals.push("Take Profit Sygnał"); i++; }
+      else if (/(tak[el]?|taek)/.test(w) && /(pro[fv]it|prefit)/.test(next)) {
+        signals.push("Take Profit Sygnał");
+        i++; // pomijamy "profit"/"prefit"
+      }
     }
 
-    const last = signals.length > 0 ? signals[signals.length-1] : null;
+    const last = signals.length > 0 ? signals[signals.length - 1] : null;
     return last ? { type: last, text: rawText } : null;
-  } finally { safeUnlink(tmpPath); }
+  } finally {
+    safeUnlink(tmpPath);
+  }
 }
-
 
     const detections = res.data.responses?.[0]?.textAnnotations || [];
     if (detections.length === 0) return null;
