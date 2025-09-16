@@ -25,15 +25,20 @@ function safeUnlink(path) {
 }
 
 // Pobiera jedną klatkę z YouTube Live z retry
+// Pobiera jedną klatkę z YouTube Live z retry
 function captureFrame(outPath, retries = 3) {
   for (let i = 0; i < retries; i++) {
     try {
-      const urls = execSync(`yt-dlp --cookies /root/Server/www.youtube.com_cookies.txt -g ${YOUTUBE_URL}`, { encoding: "utf8" })
+      // Pobieramy bez cookies, bo stream jest publiczny
+      const urls = execSync(`yt-dlp -g ${YOUTUBE_URL}`, { encoding: "utf8" })
         .trim()
         .split("\n");
+
       if (!urls.length) throw new Error("yt-dlp nie zwrócił żadnego URL");
 
       const streamUrl = urls[0];
+
+      // Pobieramy jedną klatkę przez ffmpeg
       execSync(
         `ffmpeg -y -i "${streamUrl}" -frames:v 1 -q:v 2 "${outPath}"`,
         { stdio: "ignore" }
@@ -49,6 +54,7 @@ function captureFrame(outPath, retries = 3) {
     }
   }
 }
+
 
 // Analiza obrazu i OCR przez Google Vision
 async function analyzeImage(path) {
