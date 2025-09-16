@@ -1,3 +1,4 @@
+// server.js
 const express = require("express");
 const { execSync } = require("child_process");
 const fs = require("fs");
@@ -10,6 +11,9 @@ const PORT = 5000;
 const VIDEO_ID = "yO87jeibrUU";
 const GOOGLE_API_KEY = "AIzaSyAu218u362XsRcNxTqtg1bIqbVqB8yFGyU";
 
+// Ścieżka do pliku cookies (Netscape format) — zmień jeśli trzymasz gdzie indziej
+const YT_COOKIES_PATH = "./www.youtube.com_cookies.txt";
+
 let lastSentSignal = null;
 
 function safeUnlink(path) {
@@ -19,19 +23,38 @@ function safeUnlink(path) {
   }
 }
 
-// Pobranie URL HLS publicznego streamu przez YouTube Data API
-async function getHLSUrl() {
-  const res = await axios.get(`https://www.googleapis.com/youtube/v3/videos?part=liveStreamingDetails&id=${VIDEO_ID}&key=${GOOGLE_API_KEY}`);
-  const liveDetails = res.data.items?.[0]?.liveStreamingDetails;
-  if (!liveDetails || !liveDetails.hlsManifestUrl) {
-    throw new Error("❌ Brak HLS URL w szczegółach streamu");
+// --- NOWA implementacja: pobranie HLS URL przez yt-dlp + cookies ---
+function getHLSUrlViaYtdlp(videoId) {
+  if (!fs.existsSync(YT_COOKIES_PATH)) {
+    throw new Error(`Brak pliku cookies: ${YT_COOKIES_PATH}. Wgraj cookies (Netscape) z zalogowanej przeglądarki.`);
   }
-  return liveDetails.hlsManifestUrl;
+
+  const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
+  try {
+    // uruchamiamy yt-dlp -g --cookies "plik" "url"
+    // -g wypisuje bezpośrednie URL-e (może być kilka linii)
+    const cmd = `yt-dlp -g --cookies "${YT_COOKIES_PATH}" "${videoUrl}"`;
+    const out = execSync(cmd, { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] }).trim();
+    if (!out) throw new Error("yt-dlp nie zwrócił żadnego URL (pusty output).");
+
+    const lines = out.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    // wybieramy pierwszego .m3u8 jeśli jest, inaczej pierwszy URL
+    const hls = lines.find(l => l.includes(".m3u8")) || lines[0];
+
+    if (!hls) throw new Error("Nie znaleziono URL HLS w wyjściu yt-dlp.");
+    return hls;
+  } catch (e) {
+    // jeśli yt-dlp wypisał na stderr informacje, tu pokażemy sensowny komunikat
+    const msg = e.message || String(e);
+    throw new Error(`yt-dlp error: ${msg}`);
+  }
 }
 
 // Wyciągnięcie klatki z HLS
 function captureFrame(outPath, hlsUrl) {
-  execSync(`ffmpeg -y -i "${hlsUrl}" -frames:v 1 -q:v 2 "${outPath}"`, { stdio: "ignore" });
+  // Upewniamy się, że URL nie zawiera nowej linii itp.
+  const safeUrl = String(hlsUrl).replace(/\r?\n/g, "");
+  execSync(`ffmpeg -y -i "${safeUrl}" -frames:v 1 -q:v 2 "${outPath}"`, { stdio: "ignore" });
   if (!fs.existsSync(outPath)) throw new Error("ffmpeg nie wygenerował pliku klatki");
   console.log("✅ Frame captured:", outPath);
 }
@@ -41,7 +64,7 @@ async function analyzeImage(path) {
   const width = image.bitmap.width;
   const height = image.bitmap.height;
 
-  // Bierzemy 50% szerokości
+  // Bierzemy 50% szerokości (prawą połowę)
   const crop = image.clone().crop(Math.floor(width * 0.5), 0, Math.floor(width * 0.5), height);
   const tmpPath = `crop_${Date.now()}.png`;
   await crop.writeAsync(tmpPath);
@@ -97,8 +120,9 @@ async function runAnalysis() {
   try {
     console.log("⏳ Pobieram nową klatkę z YouTube...");
 
-    // Pobranie HLS URL
-    const hlsUrl = await getHLSUrl();
+    // Pobranie HLS URL przez yt-dlp (z cookies)
+    const hlsUrl = getHLSUrlViaYtdlp(VIDEO_ID);
+    console.log("🔗 HLS URL:", hlsUrl);
 
     // Teraz przekazujemy URL do captureFrame
     captureFrame(tmpPath, hlsUrl);
