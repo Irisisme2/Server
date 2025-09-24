@@ -1,111 +1,117 @@
-// server.js
 const express = require("express");
 const { execSync } = require("child_process");
 const fs = require("fs");
 const Jimp = require("jimp");
 const axios = require("axios");
+const { google } = require("googleapis");
 
 const app = express();
 const PORT = 5000;
 
 const VIDEO_ID = "yO87jeibrUU";
-const GOOGLE_API_KEY = "AIzaSyAu218u362XsRcNxTqtg1bIqbVqB8yFGyU";
+const WEBHOOK_URL = "https://lukaszlis.app.n8n.cloud/webhook/66d5bc91-6925-41f4-8cc5-93ddc3271aba";
 
-// Ścieżka do pliku cookies (Netscape format) — zmień jeśli trzymasz gdzie indziej
-const YT_COOKIES_PATH = "./www.youtube.com_cookies.txt";
+// 🔑 Dane OAuth2
+const CLIENT_ID = "511578186990-1bccsua6n2sjqtg5c1mriitd2qmntvmj.apps.googleusercontent.com";
+const CLIENT_SECRET = "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";
+const REDIRECT_URI = "http://localhost:3000/oauth2callback";
 
+// Wczytujemy refresh_token i access_token z pliku
+const tokens = JSON.parse(fs.readFileSync("tokens.json", "utf8"));
+const oauth2Client = new google.auth.OAuth2(CLIENT_ID, CLIENT_SECRET, REDIRECT_URI);
+oauth2Client.setCredentials(tokens);
+
+// Pamięć ostatniego wysłanego sygnału
 let lastSentSignal = null;
 
+// Bezpieczne usuwanie pliku
 function safeUnlink(path) {
   if (fs.existsSync(path)) {
-    try { fs.unlinkSync(path); } 
-    catch (e) { console.warn(`⚠️ Nie udało się usunąć ${path}:`, e.message); }
+    try {
+      fs.unlinkSync(path);
+    } catch (e) {
+      console.warn(`⚠️ Nie udało się usunąć ${path}:`, e.message);
+    }
   }
 }
 
-// --- NOWA implementacja: pobranie HLS URL przez yt-dlp + cookies ---
-function getHLSUrlViaYtdlp(videoId) {
-  if (!fs.existsSync(YT_COOKIES_PATH)) {
-    throw new Error(`Brak pliku cookies: ${YT_COOKIES_PATH}. Wgraj cookies (Netscape) z zalogowanej przeglądarki.`);
+// Pobierz HLS URL z YouTube API
+async function getHLSUrl() {
+  const youtube = google.youtube("v3");
+  const res = await youtube.videos.list({
+    part: "liveStreamingDetails",
+    id: VIDEO_ID,
+    auth: oauth2Client,
+  });
+
+  const liveDetails = res.data.items?.[0]?.liveStreamingDetails;
+  if (!liveDetails || !liveDetails.hlsManifestUrl) {
+    throw new Error("❌ Brak HLS URL w szczegółach streamu");
   }
-
-  const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
-  try {
-    // uruchamiamy yt-dlp -g --cookies "plik" "url"
-    // -g wypisuje bezpośrednie URL-e (może być kilka linii)
-    const cmd = `yt-dlp -g --cookies "${YT_COOKIES_PATH}" "${videoUrl}"`;
-    const out = execSync(cmd, { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] }).trim();
-    if (!out) throw new Error("yt-dlp nie zwrócił żadnego URL (pusty output).");
-
-    const lines = out.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-    // wybieramy pierwszego .m3u8 jeśli jest, inaczej pierwszy URL
-    const hls = lines.find(l => l.includes(".m3u8")) || lines[0];
-
-    if (!hls) throw new Error("Nie znaleziono URL HLS w wyjściu yt-dlp.");
-    return hls;
-  } catch (e) {
-    // jeśli yt-dlp wypisał na stderr informacje, tu pokażemy sensowny komunikat
-    const msg = e.message || String(e);
-    throw new Error(`yt-dlp error: ${msg}`);
-  }
+  return liveDetails.hlsManifestUrl;
 }
 
-// Wyciągnięcie klatki z HLS
-function captureFrame(outPath, hlsUrl) {
-  // Upewniamy się, że URL nie zawiera nowej linii itp.
-  const safeUrl = String(hlsUrl).replace(/\r?\n/g, "");
-  execSync(`ffmpeg -y -i "${safeUrl}" -frames:v 1 -q:v 2 "${outPath}"`, { stdio: "ignore" });
+// Pobiera jedną klatkę z HLS
+async function captureFrame(outPath) {
+  const hlsUrl = await getHLSUrl();
+  execSync(`ffmpeg -y -i "${hlsUrl}" -frames:v 1 -q:v 2 "${outPath}"`, {
+    stdio: "ignore",
+  });
+
   if (!fs.existsSync(outPath)) throw new Error("ffmpeg nie wygenerował pliku klatki");
+
   console.log("✅ Frame captured:", outPath);
 }
 
+// Analiza obrazu i OCR przez Google Vision
 async function analyzeImage(path) {
   const image = await Jimp.read(path);
   const width = image.bitmap.width;
   const height = image.bitmap.height;
 
-  // Bierzemy 50% szerokości (prawą połowę)
-  const crop = image.clone().crop(Math.floor(width * 0.5), 0, Math.floor(width * 0.5), height);
+  // 🔥 Wycinamy obszar: prawa 35% szerokości i dolne 70% wysokości
+  const cropX = Math.floor(width * 0.65);
+  const cropY = Math.floor(height * 0.3);
+  const cropWidth = Math.floor(width * 0.35);
+  const cropHeight = Math.floor(height * 0.7);
+
+  const crop = image.clone().crop(cropX, cropY, cropWidth, cropHeight);
   const tmpPath = `crop_${Date.now()}.png`;
   await crop.writeAsync(tmpPath);
 
   try {
     const imageBase64 = fs.readFileSync(tmpPath, "base64");
     const res = await axios.post(
-      `https://vision.googleapis.com/v1/images:annotate?key=${GOOGLE_API_KEY}`,
+      `https://vision.googleapis.com/v1/images:annotate?key=${process.env.GOOGLE_API_KEY}`,
       {
         requests: [
           {
             image: { content: imageBase64 },
-            features: [{ type: "TEXT_DETECTION" }]
-          }
-        ]
+            features: [{ type: "TEXT_DETECTION" }],
+          },
+        ],
       }
     );
 
     const detections = res.data.responses?.[0]?.textAnnotations || [];
     if (detections.length === 0) return null;
 
-    const rawText = detections.map(d => d.description).join(" ").toLowerCase();
+    const rawText = detections.map((d) => d.description).join(" ").toLowerCase();
     console.log("🔎 OCR detected text:", rawText);
 
-    // Wyłuskujemy sygnały
     const signals = [];
     const words = rawText.split(/\s+/);
 
     for (let i = 0; i < words.length; i++) {
       const w = words[i];
-      const next = words[i + 1] || "";
-
       if (w.includes("buy")) signals.push("Buy Sygnał");
       else if (w.includes("sell") || w.includes("short")) signals.push("Sell Sygnał");
-      else if (/(tak[el]?|taek)/.test(w) && /(pro[fv]it|prefit)/.test(next)) {
+      else if (w.includes("take") && words[i + 1] && words[i + 1].includes("profit")) {
         signals.push("Take Profit Sygnał");
-        i++; // pomijamy "profit"/"prefit"
+        i++;
       }
     }
 
-    // Bierzemy ostatni sygnał
     const last = signals.length > 0 ? signals[signals.length - 1] : null;
     return last ? { type: last, text: rawText } : null;
   } finally {
@@ -113,19 +119,12 @@ async function analyzeImage(path) {
   }
 }
 
-
-// Funkcja analizy (wywoływana w endpoint)
+// Funkcja analizy
 async function runAnalysis() {
   const tmpPath = "frame.jpg";
   try {
     console.log("⏳ Pobieram nową klatkę z YouTube...");
-
-    // Pobranie HLS URL przez yt-dlp (z cookies)
-    const hlsUrl = getHLSUrlViaYtdlp(VIDEO_ID);
-    console.log("🔗 HLS URL:", hlsUrl);
-
-    // Teraz przekazujemy URL do captureFrame
-    captureFrame(tmpPath, hlsUrl);
+    await captureFrame(tmpPath);
 
     const signal = await analyzeImage(tmpPath);
 
@@ -141,7 +140,7 @@ async function runAnalysis() {
       return null;
     } else {
       lastSentSignal = signal.type;
-      console.log("📢 Nowy ostatni sygnał wysyłany:", signal);
+      console.log("📢 Nowy ostatni sygnał:", signal);
       return signal;
     }
   } catch (err) {
@@ -152,8 +151,30 @@ async function runAnalysis() {
   }
 }
 
+// Automatyczna analiza co 2 minuty
+async function startAutoAnalysis() {
+  const intervalMs = 2 * 60 * 1000;
+  async function loop() {
+    try {
+      const signal = await runAnalysis();
+      if (signal) {
+        try {
+          await axios.post(WEBHOOK_URL, signal);
+          console.log("✅ Sygnał wysłany do webhooka");
+        } catch (err) {
+          console.error("❌ Błąd wysyłki sygnału:", err.message);
+        }
+      }
+    } catch (err) {
+      console.error("❌ Błąd w pętli analizy:", err.message);
+    } finally {
+      setTimeout(loop, intervalMs);
+    }
+  }
+  loop();
+}
 
-// Endpoint ręczny – wywoływany np. z n8n
+// Endpoint ręczny
 app.post("/analyze", async (req, res) => {
   const signal = await runAnalysis();
   res.json({ ok: true, signal });
@@ -161,4 +182,5 @@ app.post("/analyze", async (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`🚀 Analyzer ready at http://localhost:${PORT}`);
+  startAutoAnalysis();
 });
